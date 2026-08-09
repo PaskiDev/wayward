@@ -8,6 +8,7 @@ rust-version = "1.88"
 description = "Audit which applications hold persistent desktop-portal permissions on a Wayland session"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
+repository = "https://github.com/PaskiDev/wayward"
 keywords = ["wayland", "security", "privacy", "portal", "dbus"]
 categories = ["command-line-utilities", "os::linux-apis"]
 
