@@ -1,0 +1,24 @@
+[package]
+name = "wayward"
+version = "0.1.1"
+edition = "2024"
+# Piso por las let-chains, estables en la edición 2024 desde 1.88. No está
+# comprobado contra un compilador viejo: aquí solo hay un 1.97.
+rust-version = "1.88"
+description = "Audit which applications hold persistent desktop-portal permissions on a Wayland session"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+keywords = ["wayland", "security", "privacy", "portal", "dbus"]
+categories = ["command-line-utilities", "os::linux-apis"]
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4.6", features = ["derive"] }
+futures-util = "0.3"
+jiff = "0.2"
+owo-colors = "4"
+ratatui = "0.30"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+zbus = { version = "5.18", default-features = false, features = ["tokio"] }
