@@ -46,13 +46,22 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
         }
     };
 
+    // Los corchetes marcan la tecla y los paréntesis la cantidad. Sin esa
+    // distinción «3 revoked» se lee como «tres revocados», que es justo lo que
+    // el número no significa.
     let title = Line::from(vec![
         Span::styled(" wayward ", Style::new().bold()),
-        Span::styled(" 1 permissions ", tab_style(Tab::Permisos)),
+        Span::styled(
+            format!(" [1] permissions ({}) ", app.entries.len()),
+            tab_style(Tab::Permisos),
+        ),
         Span::raw(" "),
-        Span::styled(" 2 activity ", tab_style(Tab::Actividad)),
+        Span::styled(" [2] activity ", tab_style(Tab::Actividad)),
         Span::raw(" "),
-        Span::styled(" 3 revoked ", tab_style(Tab::Revocados)),
+        Span::styled(
+            format!(" [3] revoked ({}) ", app.history.revocations.len()),
+            tab_style(Tab::Revocados),
+        ),
     ]);
     frame.render_widget(Paragraph::new(title), left);
 

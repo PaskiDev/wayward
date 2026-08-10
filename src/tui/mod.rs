@@ -426,6 +426,25 @@ mod tests {
         assert_eq!(app.activity.len(), 1);
     }
 
+    /// «3 revoked» se leía como «tres revocados» cuando el 3 era la tecla. La
+    /// tecla va entre corchetes y la cantidad entre paréntesis, que es lo único
+    /// que hace la cabecera legible de un vistazo.
+    #[test]
+    fn la_cabecera_separa_la_tecla_de_la_cantidad() {
+        let vacia = App::new(Vec::new(), Cache::default(), History::default());
+        let screen = render(&vacia);
+        assert!(screen.contains("[3] revoked (0)"), "cabecera ambigua:\n{screen}");
+        assert!(screen.contains("[1] permissions (0)"), "cabecera ambigua:\n{screen}");
+
+        let mut history = History::default();
+        history.record(Revocation::of(&entry("tok"), &Cache::default(), 1));
+        history.record(Revocation::of(&entry("otro"), &Cache::default(), 2));
+        let con_datos = App::new(vec![entry("a")], Cache::default(), history);
+        let screen = render(&con_datos);
+        assert!(screen.contains("[3] revoked (2)"), "falta la cuenta:\n{screen}");
+        assert!(screen.contains("[1] permissions (1)"), "falta la cuenta:\n{screen}");
+    }
+
     #[test]
     fn la_pestana_de_revocados_explica_para_que_sirve() {
         let mut app = App::new(Vec::new(), Cache::default(), History::default());
