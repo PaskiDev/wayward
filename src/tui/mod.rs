@@ -16,6 +16,7 @@ use ratatui::crossterm::event::{
 use tokio::sync::mpsc;
 
 use crate::attrib::{Cache, now};
+use crate::history::{History, Revocation};
 use crate::store::{Entry, PermissionStoreProxy};
 use crate::watch;
 
@@ -26,6 +27,7 @@ const ACTIVITY_LIMIT: usize = 500;
 pub enum Tab {
     Permisos,
     Actividad,
+    Revocados,
 }
 
 /// Una línea del registro de actividad.
@@ -46,6 +48,8 @@ pub struct Confirm {
 pub struct App {
     pub entries: Vec<Entry>,
     pub cache: Cache,
+    /// Lo revocado, que ya no existe en el permission store y solo vive aquí.
+    pub history: History,
     pub selected: usize,
     pub tab: Tab,
     pub activity: VecDeque<Activity>,
@@ -61,10 +65,11 @@ pub struct App {
 }
 
 impl App {
-    fn new(entries: Vec<Entry>, cache: Cache) -> Self {
+    fn new(entries: Vec<Entry>, cache: Cache, history: History) -> Self {
         Self {
             entries,
             cache,
+            history,
             selected: 0,
             tab: Tab::Permisos,
             activity: VecDeque::new(),
@@ -151,7 +156,7 @@ impl App {
 pub async fn run() -> Result<()> {
     let proxy = crate::connect().await?;
     let entries = crate::collect(&proxy, None).await?;
-    let mut app = App::new(entries, Cache::load()?);
+    let mut app = App::new(entries, Cache::load()?, History::load()?);
 
     let (monitor_tx, mut monitor_rx) = mpsc::channel(256);
     watch::spawn(monitor_tx);
@@ -213,9 +218,26 @@ async fn handle_key(
             KeyCode::Char('y') | KeyCode::Char('Y') => {
                 let (token, table) = (confirm.token.clone(), confirm.table.clone());
                 app.confirm = None;
+
+                // Se fotografía antes de borrar: después el permiso no existe
+                // en ninguna parte y la atribución sería irrecuperable.
+                let snapshot = app
+                    .entries
+                    .iter()
+                    .find(|e| e.id == token && e.table == table)
+                    .map(|entry| Revocation::of(entry, &app.cache, now()));
+
                 match proxy.delete(&table, &token).await {
                     Ok(()) => {
-                        app.status = Some(format!("revoked {token}"));
+                        let mut logged = Ok(());
+                        if let Some(revocation) = snapshot {
+                            app.history.record(revocation);
+                            logged = app.history.save();
+                        }
+                        app.status = Some(match logged {
+                            Ok(()) => format!("revoked {token}"),
+                            Err(e) => format!("revoked {token}, but the log failed: {e}"),
+                        });
                         reload(app, proxy).await;
                     }
                     Err(e) => app.status = Some(format!("could not revoke: {e}")),
@@ -238,11 +260,13 @@ async fn handle_key(
         KeyCode::Tab => {
             app.tab = match app.tab {
                 Tab::Permisos => Tab::Actividad,
-                Tab::Actividad => Tab::Permisos,
+                Tab::Actividad => Tab::Revocados,
+                Tab::Revocados => Tab::Permisos,
             }
         }
         KeyCode::Char('1') => app.tab = Tab::Permisos,
         KeyCode::Char('2') => app.tab = Tab::Actividad,
+        KeyCode::Char('3') => app.tab = Tab::Revocados,
         KeyCode::Char('R') => {
             reload(app, proxy).await;
             app.status = Some("list reloaded".to_string());
@@ -331,7 +355,7 @@ mod tests {
 
     #[test]
     fn un_permiso_sin_atribuir_se_ve_como_tal() {
-        let app = App::new(vec![entry("4fuEEh6prRn88cBf79d3jw")], Cache::default());
+        let app = App::new(vec![entry("4fuEEh6prRn88cBf79d3jw")], Cache::default(), History::default());
         let screen = render(&app);
         assert!(screen.contains("ScreenCast"), "falta la tabla:\n{screen}");
         assert!(screen.contains("unattributed"), "falta el aviso:\n{screen}");
@@ -342,7 +366,7 @@ mod tests {
     /// herramienta de vigilancia no se puede permitir.
     #[test]
     fn no_se_anuncia_la_vigilancia_antes_de_confirmarla() {
-        let mut app = App::new(vec![entry("tok")], Cache::default());
+        let mut app = App::new(vec![entry("tok")], Cache::default(), History::default());
         let antes = render(&app);
         assert!(antes.contains("connecting"), "debería estar conectando:\n{antes}");
         assert!(!antes.contains("listening"), "no puede afirmarlo aún:\n{antes}");
@@ -367,7 +391,7 @@ mod tests {
             0,
         );
 
-        let app = App::new(vec![entry("4fuEEh6prRn88cBf79d3jw")], cache);
+        let app = App::new(vec![entry("4fuEEh6prRn88cBf79d3jw")], cache, History::default());
         let screen = render(&app);
         assert!(screen.contains("obs"), "falta el nombre atribuido:\n{screen}");
         assert!(!screen.contains("unattributed"), "no debería avisar ya:\n{screen}");
@@ -375,7 +399,7 @@ mod tests {
 
     #[test]
     fn el_monitor_caido_se_anuncia() {
-        let mut app = App::new(vec![entry("tok")], Cache::default());
+        let mut app = App::new(vec![entry("tok")], Cache::default(), History::default());
         app.monitor_error = Some("el bus rechazó activar el modo monitor".to_string());
         let screen = render(&app);
         assert!(screen.contains("monitor down"), "falta el aviso:\n{screen}");
@@ -383,7 +407,7 @@ mod tests {
 
     #[test]
     fn la_vista_de_actividad_se_pinta_sin_datos() {
-        let mut app = App::new(Vec::new(), Cache::default());
+        let mut app = App::new(Vec::new(), Cache::default(), History::default());
         app.tab = Tab::Actividad;
         let screen = render(&app);
         assert!(screen.contains("Listening"), "falta la pista:\n{screen}");
@@ -391,7 +415,7 @@ mod tests {
 
     #[test]
     fn una_concesion_marca_el_token_como_reciente() {
-        let mut app = App::new(vec![entry("tok")], Cache::default());
+        let mut app = App::new(vec![entry("tok")], Cache::default(), History::default());
         let reload = app.on_monitor(watch::Event::Grant {
             identity: Identity::default(),
             token: "tok".to_string(),
@@ -403,8 +427,50 @@ mod tests {
     }
 
     #[test]
+    fn la_pestana_de_revocados_explica_para_que_sirve() {
+        let mut app = App::new(Vec::new(), Cache::default(), History::default());
+        app.tab = Tab::Revocados;
+        let screen = render(&app);
+        assert!(screen.contains("Nothing revoked yet"), "falta la pista:\n{screen}");
+    }
+
+    /// La razón de ser de la pestaña: el permiso ya no está en el store y la
+    /// caché de atribuciones tampoco lo tiene, y aun así hay que poder decir a
+    /// quién pertenecía. Por eso la app se construye aquí vacía salvo el
+    /// histórico.
+    #[test]
+    fn lo_revocado_sobrevive_al_permiso_y_a_la_cache() {
+        let mut cache = Cache::default();
+        cache.observe(
+            "4fuEEh6prRn88cBf79d3jw",
+            Identity {
+                pid: Some(1),
+                exe: Some("/usr/bin/obs".to_string()),
+                cmdline: None,
+                comm: Some("obs".to_string()),
+            },
+            "screencast",
+            0,
+        );
+        let mut history = History::default();
+        history.record(Revocation::of(
+            &entry("4fuEEh6prRn88cBf79d3jw"),
+            &cache,
+            1_786_300_000,
+        ));
+
+        let mut app = App::new(Vec::new(), Cache::default(), history);
+        app.tab = Tab::Revocados;
+        let screen = render(&app);
+
+        assert!(screen.contains("obs"), "falta el dueño:\n{screen}");
+        assert!(screen.contains("screencast"), "falta la tabla:\n{screen}");
+        assert!(screen.contains("/usr/bin/obs"), "falta el ejecutable:\n{screen}");
+    }
+
+    #[test]
     fn el_cursor_no_se_sale_de_la_lista() {
-        let mut app = App::new(vec![entry("a"), entry("b")], Cache::default());
+        let mut app = App::new(vec![entry("a"), entry("b")], Cache::default(), History::default());
         app.move_by(-1);
         assert_eq!(app.selected, 0, "no debe pasar del principio");
         app.move_by(50);
@@ -413,7 +479,7 @@ mod tests {
 
     #[test]
     fn el_registro_de_actividad_no_crece_sin_limite() {
-        let mut app = App::new(Vec::new(), Cache::default());
+        let mut app = App::new(Vec::new(), Cache::default(), History::default());
         for i in 0..ACTIVITY_LIMIT + 25 {
             app.push_activity(Activity {
                 time: "00:00:00".to_string(),

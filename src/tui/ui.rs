@@ -25,6 +25,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     match app.tab {
         Tab::Permisos => draw_permisos(frame, body, app),
         Tab::Actividad => draw_actividad(frame, body, app),
+        Tab::Revocados => draw_revocados(frame, body, app),
     }
     draw_footer(frame, footer, app);
 
@@ -50,6 +51,8 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
         Span::styled(" 1 permissions ", tab_style(Tab::Permisos)),
         Span::raw(" "),
         Span::styled(" 2 activity ", tab_style(Tab::Actividad)),
+        Span::raw(" "),
+        Span::styled(" 3 revoked ", tab_style(Tab::Revocados)),
     ]);
     frame.render_widget(Paragraph::new(title), left);
 
@@ -290,6 +293,93 @@ fn draw_actividad(frame: &mut Frame, area: Rect, app: &App) {
         .collect();
 
     frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// Lo revocado. Es la única vista que enseña algo que ya no existe: en cuanto
+/// se borra del permission store, este registro es la única constancia.
+fn draw_revocados(frame: &mut Frame, area: Rect, app: &App) {
+    let block = bordered(" revoked ");
+    let revocations = app.history.newest_first();
+
+    if revocations.is_empty() {
+        let hint = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "  Nothing revoked yet.",
+                Style::new().dim(),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "  Revoking a permission deletes it from the store for good — neither",
+                Style::new().dim(),
+            )),
+            Line::from(Span::styled(
+                "  the portal nor the system remembers it existed. Whatever you revoke",
+                Style::new().dim(),
+            )),
+            Line::from(Span::styled(
+                "  from here is kept in this list, with whoever it belonged to.",
+                Style::new().dim(),
+            )),
+        ];
+        frame.render_widget(Paragraph::new(hint).block(block), area);
+        return;
+    }
+
+    let mut lines = Vec::new();
+    for revocation in revocations {
+        let who = match &revocation.app {
+            Some(app) => Span::styled(app.clone(), Style::new().fg(Color::Green).bold()),
+            None => Span::styled("unattributed", Style::new().fg(Color::Yellow)),
+        };
+        lines.push(Line::from(vec![
+            Span::styled(short_stamp(revocation.revoked_at), Style::new().dim()),
+            Span::raw("  "),
+            who,
+            Span::raw("  "),
+            Span::styled(revocation.table.clone(), Style::new().dim()),
+        ]));
+        lines.push(Line::from(vec![
+            Span::raw("               "),
+            Span::styled(revocation.token.clone(), Style::new().dim()),
+        ]));
+        if let Some(exe) = &revocation.exe {
+            lines.push(Line::from(vec![
+                Span::raw("               "),
+                Span::styled(exe.clone(), Style::new().dim()),
+            ]));
+        }
+        // Los detalles decodificados se guardan porque tras el borrado no hay
+        // de dónde volver a sacarlos.
+        if !revocation.details.is_empty() {
+            let summary = revocation
+                .details
+                .iter()
+                .map(|(label, value)| format!("{label} {value}"))
+                .collect::<Vec<_>>()
+                .join(" · ");
+            lines.push(Line::from(vec![
+                Span::raw("               "),
+                Span::styled(truncate(&summary, 60), Style::new().dim()),
+            ]));
+        }
+        lines.push(Line::from(""));
+    }
+
+    let visible = area.height.saturating_sub(2) as usize;
+    let shown: Vec<Line> = lines.into_iter().take(visible).collect();
+    frame.render_widget(Paragraph::new(shown).block(block), area);
+}
+
+/// Fecha corta para el listado: día, mes y hora bastan para situarlo.
+fn short_stamp(ts: i64) -> String {
+    jiff::Timestamp::from_second(ts)
+        .map(|t| {
+            t.to_zoned(jiff::tz::TimeZone::system())
+                .strftime("%d %b %H:%M")
+                .to_string()
+        })
+        .unwrap_or_else(|_| ts.to_string())
 }
 
 fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {

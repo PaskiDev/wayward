@@ -1,6 +1,7 @@
 //! wayward — audita los permisos persistentes de portal en un escritorio Wayland.
 
 mod attrib;
+mod history;
 mod journal;
 mod notify;
 mod render;
@@ -321,12 +322,17 @@ async fn revoke(
         return Ok(());
     }
 
+    // La foto se toma antes de borrar: después el permiso no existe en ninguna
+    // parte y no hay forma de reconstruir a quién pertenecía.
+    let mut log = history::History::load()?;
     for entry in &targets {
+        log.record(history::Revocation::of(entry, &cache, attrib::now()));
         proxy
             .delete(&entry.table, &entry.id)
             .await
             .with_context(|| format!("could not delete \"{}\" from \"{}\"", entry.id, entry.table))?;
     }
+    log.save()?;
 
     println!(
         "  {} {} {} revoked.\n",

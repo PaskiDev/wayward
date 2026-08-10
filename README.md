@@ -82,8 +82,14 @@ That transition is precisely what the system gives you no way to see.
 ```
 
 Keys: `j`/`k` to move, `r` to revoke with a confirmation prompt, `R` to reload,
-`tab` or `1`/`2` to switch views, `q` or Ctrl-C to quit. The `✦` marks anything
-attributed during the current session.
+`tab` or `1`/`2`/`3` to switch views, `q` or Ctrl-C to quit. The `✦` marks
+anything attributed during the current session.
+
+The third view lists what you have revoked. Deleting a permission removes it
+from the store for good — neither the portal nor the system remembers it
+existed — so the log keeps a snapshot taken just before the delete: which
+application it belonged to, when it had been granted, and the decoded details.
+None of that can be reconstructed afterwards.
 
 `list` against a real machine:
 
