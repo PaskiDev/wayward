@@ -42,6 +42,7 @@ wayward exists to close that gap.
 $ wayward               # terminal interface, with the bus monitor running inside
 $ wayward list          # what is granted, with risk and age
 $ wayward watch         # watch the bus and work out who each permission belongs to
+$ wayward resolve       # recover the identity of permissions granted before you started watching
 $ wayward revoke TOKEN  # revoke a single permission
 ```
 
@@ -89,7 +90,37 @@ Both commands take `--json` so they compose with other tooling. `revoke` takes
 `--dry-run` to preview what would be deleted, `--table` to clear an entire table,
 and `-y` to skip the confirmation.
 
-## How attribution works
+## Recovering the past
+
+`watch` can only attribute what it witnesses, which is no help for a permission
+granted months ago. `resolve` covers that: the permission store records a
+`timeIssued`, and applications tend to log what they are doing at the moment
+they do it, so correlating the two recovers what was never written down.
+
+```
+$ wayward resolve
+
+  4fuEEh6prRn88cBf79d3jw   screencast · 2026-08-08 18:46 (1 day ago)
+    obs              high     +0s   /usr/bin/obs
+                     info: [pipewire] Screencast session created
+    vesktop          medium   +0s   /usr/lib/vesktop/vesktop
+                     [arRPC > process] detected game! OBS
+```
+
+The method is not tied to any particular application: journald attaches `_COMM`,
+`_EXE` and `_PID` to every line, so it is enough to see who was writing around
+the grant and rank them. A process that names the thing it just asked
+permission for — "Screencast session created", in the same second — outranks one
+that merely happened to be logging. Specific keywords beat generic ones, so a
+line saying `screencast` wins over one that only mentions `pipewire`.
+
+`--write` records the winners, and only `high` confidence by default. That
+threshold matters: the second candidate above is a Discord client that really
+can capture your screen and really was logging at that instant. It is a
+plausible suspect and a wrong answer, which is precisely the kind of mistake a
+security tool must not make silently.
+
+## How live attribution works
 
 The permission store keeps the permission already anonymised, but the request
 itself travels over D-Bus, and there the sender *is* identifiable. `wayward
@@ -115,10 +146,9 @@ resulting map is stored in `~/.local/state/wayward/attribution.json`.
 
 Worth being clear about:
 
-- **`watch` only sees what happens while it runs.** Permissions granted before
-  its first run stay unattributed forever, because that information was never
-  recorded anywhere. Cross-referencing `timeIssued` against the journal could
-  narrow them down by approximation, but that is not implemented yet.
+- **`watch` only sees what happens while it runs.** For anything granted before
+  that, use `resolve` — but its reach ends where journald's retention does, and
+  it produces ranked candidates rather than certainties.
 - **It needs monitor mode on the session bus**, which is yours, so no root is
   required. A connection in monitor mode can no longer issue calls, which is why
   wayward opens two.

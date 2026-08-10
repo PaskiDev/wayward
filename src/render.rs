@@ -1,10 +1,126 @@
 //! Presentación del informe.
 
 use crate::attrib::{Cache, now};
+use crate::journal::{Confidence, Resolution};
 use crate::risk::{self, Risk};
 use crate::store::{Decision, Entry};
 use owo_colors::OwoColorize;
 use std::collections::BTreeMap;
+
+/// Informe de `wayward resolve`.
+pub fn report_resolution(results: &[Resolution], written: usize, min: Confidence, json: bool) {
+    if json {
+        let output = serde_json::json!({
+            "generated_at": now(),
+            "written": written,
+            "min_confidence": min,
+            "resolutions": results,
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&output).unwrap_or_default()
+        );
+        return;
+    }
+
+    if results.is_empty() {
+        println!(
+            "\n  {}\n\n  Every granted permission already has a name.\n",
+            "Nothing left to resolve.".bold()
+        );
+        return;
+    }
+
+    println!();
+    for resolution in results {
+        let when = match resolution.issued_at {
+            Some(ts) => format_issued(ts),
+            None => "no timestamp recorded".to_string(),
+        };
+        println!(
+            "  {}   {} · {}",
+            resolution.token.bold(),
+            resolution.table,
+            when.dimmed()
+        );
+
+        if resolution.issued_at.is_none() {
+            println!(
+                "    {}\n",
+                "This table stores no grant time, so there is nothing to correlate against."
+                    .dimmed()
+            );
+            continue;
+        }
+        if resolution.candidates.is_empty() {
+            println!(
+                "    {}\n",
+                "No process logged anything in that window. The journal may not reach back \
+                 that far."
+                    .dimmed()
+            );
+            continue;
+        }
+
+        // Tres candidatos bastan: por debajo del tercero la señal es ruido.
+        for candidate in resolution.candidates.iter().take(3) {
+            let sign = if candidate.offset >= 0 { "+" } else { "-" };
+            println!(
+                "    {} {} {:>4}   {}",
+                format!("{:<16}", truncate(&candidate.label, 16)).bold(),
+                paint_confidence(candidate.confidence),
+                format!("{}{}s", sign, candidate.offset.abs()),
+                candidate.exe.as_deref().unwrap_or("").dimmed(),
+            );
+            if !candidate.evidence.is_empty() {
+                let evidence = truncate(&candidate.evidence, 84);
+                println!("    {:<16} {}", "", evidence.dimmed());
+            }
+        }
+        println!();
+    }
+
+    if written > 0 {
+        println!(
+            "  {} {} {} written to the attribution map ({} confidence or better).",
+            "✓".green(),
+            written,
+            plural(written, "attribution", "attributions"),
+            min.label()
+        );
+    } else {
+        println!(
+            "  {}",
+            "Nothing written. Re-run with --write to persist the attributions above.".dimmed()
+        );
+    }
+    println!(
+        "  {}\n",
+        "These are correlations, not proof: a match means the process was logging at the \
+         moment the permission was filed."
+            .dimmed()
+    );
+}
+
+/// El relleno va dentro del color, no fuera: `{:<8}` cuenta bytes, y los
+/// códigos de escape ANSI cuentan como tales, así que colorear primero y
+/// alinear después descuadra la columna entera.
+fn paint_confidence(confidence: Confidence) -> String {
+    let padded = format!("{:<7}", confidence.label());
+    match confidence {
+        Confidence::High => padded.green().bold().to_string(),
+        Confidence::Medium => padded.yellow().to_string(),
+        Confidence::Low => padded.dimmed().to_string(),
+    }
+}
+
+fn truncate(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(max.saturating_sub(1)).collect();
+    format!("{kept}…")
+}
 
 pub fn report(entries: &[Entry], cache: &Cache, json: bool) {
     if json {

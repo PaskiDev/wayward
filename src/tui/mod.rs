@@ -118,10 +118,10 @@ impl App {
                 token,
                 table,
             } => {
+                // Solo estado en memoria: persistir es efecto de borde y lo hace
+                // el bucle de eventos. Si no, los tests que ejercitan esta
+                // transición escribirían en el estado real del usuario.
                 self.cache.observe(&token, identity.clone(), table, now());
-                if let Err(e) = self.cache.save() {
-                    self.status = Some(format!("could not save the attribution: {e}"));
-                }
                 self.fresh.insert(token.clone());
                 self.push_activity(Activity {
                     time: clock(),
@@ -174,6 +174,9 @@ async fn event_loop(
             }
             Some(event) = monitor.recv() => {
                 if app.on_monitor(event) {
+                    if let Err(e) = app.cache.save() {
+                        app.status = Some(format!("could not save the attribution: {e}"));
+                    }
                     reload(app, proxy).await;
                 }
             }

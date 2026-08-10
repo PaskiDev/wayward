@@ -1,6 +1,7 @@
 //! wayward — audita los permisos persistentes de portal en un escritorio Wayland.
 
 mod attrib;
+mod journal;
 mod render;
 mod risk;
 mod store;
@@ -53,6 +54,23 @@ enum Command {
         json: bool,
     },
 
+    /// Recover the identity of permissions granted before wayward was watching,
+    /// by correlating their grant time against the journal
+    Resolve {
+        /// Seconds to search either side of the grant time
+        #[arg(long, default_value_t = 10)]
+        window: i64,
+        /// Persist the winning candidates to the attribution map
+        #[arg(long)]
+        write: bool,
+        /// Confidence a candidate needs before --write will record it
+        #[arg(long, value_enum, default_value_t = journal::Confidence::High)]
+        min_confidence: journal::Confidence,
+        /// JSON output
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Revoke a granted permission
     Revoke {
         /// Permission token, as shown by `wayward list`
@@ -77,6 +95,12 @@ async fn main() -> Result<()> {
         None | Some(Command::Tui) => tui::run().await,
         Some(Command::List { json, table }) => list(json, table).await,
         Some(Command::Watch { json }) => watch::run(json).await,
+        Some(Command::Resolve {
+            window,
+            write,
+            min_confidence,
+            json,
+        }) => resolve(window, write, min_confidence, json).await,
         Some(Command::Revoke {
             token,
             table,
@@ -116,6 +140,67 @@ async fn list(json: bool, table: Option<String>) -> Result<()> {
     let entries = collect(&proxy, table.as_deref()).await?;
     let cache = Cache::load()?;
     render::report(&entries, &cache, json);
+    Ok(())
+}
+
+/// Reconstruye la autoría de los permisos que nadie vio conceder.
+async fn resolve(
+    window: i64,
+    write: bool,
+    min_confidence: journal::Confidence,
+    json: bool,
+) -> Result<()> {
+    let proxy = connect().await?;
+    let entries = collect(&proxy, None).await?;
+    let mut cache = Cache::load()?;
+
+    // Solo tiene sentido sobre lo concedido y sin atribuir: un rechazo no
+    // necesita dueño, y lo ya atribuido no se toca.
+    let pending: Vec<_> = entries
+        .iter()
+        .filter(|e| e.decision() == store::Decision::Granted)
+        .filter(|e| e.unattributed() && cache.get(&e.id).is_none())
+        .collect();
+
+    let mut results = Vec::new();
+    for entry in pending {
+        let candidates = match entry.issued_at {
+            Some(issued) => journal::resolve(&entry.table, issued, window)?,
+            None => Vec::new(),
+        };
+        results.push(journal::Resolution {
+            token: entry.id.clone(),
+            table: entry.table.clone(),
+            issued_at: entry.issued_at,
+            candidates,
+        });
+    }
+
+    let mut written = 0;
+    if write {
+        for resolution in &results {
+            let Some(candidate) = resolution.best(min_confidence) else {
+                continue;
+            };
+            cache.observe(
+                &resolution.token,
+                attrib::Identity {
+                    pid: candidate.pid,
+                    exe: candidate.exe.clone(),
+                    cmdline: None,
+                    comm: Some(candidate.label.clone()),
+                },
+                &resolution.table,
+                attrib::now(),
+            );
+            written += 1;
+        }
+        if written > 0 {
+            cache.save()?;
+        }
+    }
+
+    render::report_resolution(&results, written, min_confidence, json);
     Ok(())
 }
 
