@@ -3,6 +3,7 @@
 use crate::attrib::{Cache, now};
 use crate::journal::{Confidence, Resolution};
 use crate::risk::{self, Risk};
+use crate::sessions::Session;
 use crate::store::{Decision, Entry};
 use owo_colors::OwoColorize;
 use std::collections::BTreeMap;
@@ -105,6 +106,75 @@ pub fn report_resolution(results: &[Resolution], written: usize, min: Confidence
 /// El relleno va dentro del color, no fuera: `{:<8}` cuenta bytes, y los
 /// códigos de escape ANSI cuentan como tales, así que colorear primero y
 /// alinear después descuadra la columna entera.
+/// Informe de `wayward sessions`.
+pub fn report_sessions(sessions: &[Session], json: bool) {
+    if json {
+        let output = serde_json::json!({
+            "generated_at": now(),
+            "sessions": sessions,
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&output).unwrap_or_default()
+        );
+        return;
+    }
+
+    if sessions.is_empty() {
+        println!(
+            "\n  {}\n\n  No application currently holds an open desktop-portal session.\n",
+            "Nothing open.".bold()
+        );
+        return;
+    }
+
+    println!(
+        "\n  {}   {}\n",
+        "Open portal sessions".bold(),
+        format!(
+            "{} {}",
+            sessions.len(),
+            plural(sessions.len(), "session", "sessions")
+        )
+        .dimmed()
+    );
+
+    for session in sessions {
+        let who = match &session.owner {
+            Some(identity) => identity.label().green().bold().to_string(),
+            // La conexión se fue entre listar y preguntar, o el bus no quiso
+            // decirlo. La sesión existe igual y hay que enseñarla.
+            None => "owner unresolved".yellow().to_string(),
+        };
+        println!("    {} {}", "●".red(), who);
+
+        if let Some(identity) = &session.owner {
+            if let Some(exe) = &identity.exe {
+                println!("      {:<9} {}", "exe", exe.dimmed());
+            }
+            if let Some(cmdline) = &identity.cmdline {
+                println!("      {:<9} {}", "cmdline", truncate(cmdline, 78).dimmed());
+            }
+            if let Some(pid) = identity.pid {
+                println!(
+                    "      {:<9} {}",
+                    "pid",
+                    format!("{pid} · {}", session.unique_name).dimmed()
+                );
+            }
+        }
+        println!("      {:<9} {}", "session", session.path.dimmed());
+        println!();
+    }
+
+    println!(
+        "  {} An open session is what capture runs on top of, not proof that capture is",
+        "!".yellow().bold()
+    );
+    println!("    happening this instant. It does mean the application can resume without");
+    println!("    any further prompt.\n");
+}
+
 fn paint_confidence(confidence: Confidence) -> String {
     let padded = format!("{:<7}", confidence.label());
     match confidence {

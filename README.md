@@ -41,6 +41,7 @@ wayward exists to close that gap.
 ```console
 $ wayward               # terminal interface, with the bus monitor running inside
 $ wayward list          # what is granted, with risk and age
+$ wayward sessions      # who has a portal session open right now
 $ wayward watch         # watch the bus and work out who each permission belongs to
 $ wayward resolve       # recover the identity of permissions granted before you started watching
 $ wayward revoke TOKEN  # revoke a single permission
@@ -108,6 +109,39 @@ attributed during the current session.
 Both commands take `--json` so they compose with other tooling. `revoke` takes
 `--dry-run` to preview what would be deleted, `--table` to clear an entire table,
 and `-y` to skip the confirmation.
+
+## What is open right now
+
+`list` answers who *could* capture your screen. `sessions` answers who has a
+portal session open at this instant, which is usually the question that actually
+worries someone.
+
+```
+$ wayward sessions
+
+  Open portal sessions   1 session
+
+    ● obs
+      exe       /usr/bin/obs
+      cmdline   obs
+      pid       237842 · :1.72
+      session   /org/freedesktop/portal/desktop/session/1_72/obs1
+```
+
+The portal publishes one object per live session at
+`/org/freedesktop/portal/desktop/session/<sender>/<token>`, where `<sender>` is
+the owning connection's unique bus name with the colon stripped and dots turned
+into underscores. That transformation is invertible, so `1_72` becomes `:1.72`,
+the bus turns it into a PID, and `/proc` turns that into an executable.
+
+Unlike `watch`, this needs no monitor and no history: it is a point-in-time
+query of live state, so it works on a machine where wayward was installed a
+minute ago. It also catches sessions resumed from a restore token, which produce
+no new grant for a monitor to see.
+
+An open session is the thing capture runs on top of, not proof that capture is
+happening this instant — but it does mean the application can resume without any
+further prompt.
 
 ## Recovering the past
 

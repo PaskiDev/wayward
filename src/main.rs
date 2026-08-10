@@ -6,6 +6,7 @@ mod notify;
 mod render;
 mod risk;
 mod service;
+mod sessions;
 mod store;
 mod tui;
 mod watch;
@@ -67,6 +68,14 @@ enum Command {
     Service {
         #[command(subcommand)]
         action: ServiceAction,
+    },
+
+    /// Show which applications hold an open portal session right now, and who
+    /// they are — no monitor or history required
+    Sessions {
+        /// JSON output
+        #[arg(long)]
+        json: bool,
     },
 
     /// Recover the identity of permissions granted before wayward was watching,
@@ -140,6 +149,7 @@ async fn main() -> Result<()> {
             ServiceAction::Uninstall => service::uninstall(),
             ServiceAction::Status => service::status(),
         },
+        Some(Command::Sessions { json }) => list_sessions(json).await,
         Some(Command::Resolve {
             window,
             write,
@@ -185,6 +195,16 @@ async fn list(json: bool, table: Option<String>) -> Result<()> {
     let entries = collect(&proxy, table.as_deref()).await?;
     let cache = Cache::load()?;
     render::report(&entries, &cache, json);
+    Ok(())
+}
+
+/// Quién tiene una sesión de portal abierta en este instante.
+async fn list_sessions(json: bool) -> Result<()> {
+    let connection = zbus::Connection::session()
+        .await
+        .context("could not connect to the session bus")?;
+    let sessions = sessions::live(&connection).await?;
+    render::report_sessions(&sessions, json);
     Ok(())
 }
 
