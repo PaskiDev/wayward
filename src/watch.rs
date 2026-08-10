@@ -37,6 +37,10 @@ use crate::store::value_to_json;
 /// Lo que el monitor observa en el bus.
 #[derive(Debug, Clone)]
 pub enum Event {
+    /// El bus aceptó el modo monitor. Hasta que llega esto no se está
+    /// vigilando nada, y decir lo contrario antes de tiempo sería mentir en la
+    /// única dirección que importa.
+    Ready,
     /// Una aplicación ha llamado a un portal sensible.
     Call {
         identity: Identity,
@@ -123,6 +127,10 @@ pub async fn monitor(tx: Sender<Event>) -> Result<()> {
         .become_monitor(&rules, 0)
         .await
         .context("the bus refused to enable monitor mode")?;
+
+    if tx.send(Event::Ready).await.is_err() {
+        return Ok(());
+    }
 
     // Fragmento del remitente → identidad del proceso que hay detrás.
     let mut senders: HashMap<String, Identity> = HashMap::new();
@@ -248,20 +256,29 @@ pub fn spawn(tx: Sender<Event>) -> tokio::task::JoinHandle<()> {
     })
 }
 
-/// El comando `wayward watch`: imprime lo que ve y persiste las atribuciones.
-pub async fn run(json: bool) -> Result<()> {
+/// Cómo se comporta `wayward watch`.
+pub struct Options {
+    pub json: bool,
+    /// Sin adornos y sin registrar cada llamada: pensado para correr bajo
+    /// systemd durante semanas, donde el ruido llena el journal para nada.
+    pub daemon: bool,
+    /// Avisar por notificación de escritorio al aparecer una concesión.
+    pub notify: bool,
+}
+
+/// El comando `wayward watch`: observa, persiste y avisa.
+pub async fn run(options: Options) -> Result<()> {
     let (tx, mut rx) = tokio::sync::mpsc::channel(256);
     spawn(tx);
 
     let mut cache = Cache::load()?;
-    let mut dirty = false;
 
-    if !json {
-        println!(
-            "{} listening to the portal. Ctrl-C to stop and save.\n",
-            "wayward".bold()
-        );
-    }
+    // Conexión propia para los avisos: la del monitor no puede emitir llamadas.
+    // Si no hay servidor de notificaciones se sigue sin ellas, no se aborta.
+    let notifier = match options.notify {
+        true => zbus::Connection::session().await.ok(),
+        false => None,
+    };
 
     loop {
         let event = tokio::select! {
@@ -273,11 +290,28 @@ pub async fn run(json: bool) -> Result<()> {
         };
 
         match event {
+            // El anuncio se emite aquí y no antes: para cuando se lee, la
+            // vigilancia es un hecho comprobado y no una intención.
+            Event::Ready => {
+                if options.daemon {
+                    println!("wayward: monitoring the portal");
+                } else if !options.json {
+                    println!(
+                        "{} listening to the portal. Ctrl-C to stop.\n",
+                        "wayward".bold()
+                    );
+                }
+            }
+
             Event::Call {
                 identity,
                 interface,
                 member,
-            } => report_call(json, &identity, &interface, &member),
+            } => {
+                if !options.daemon {
+                    report_call(options.json, &identity, &interface, &member);
+                }
+            }
 
             Event::Grant {
                 identity,
@@ -285,8 +319,16 @@ pub async fn run(json: bool) -> Result<()> {
                 table,
             } => {
                 cache.observe(&token, identity.clone(), table, now());
-                dirty = true;
-                report_grant(json, &identity, &token, table);
+                // Se persiste en el acto. Guardar solo al salir significa
+                // perderlo todo ante un SIGKILL o un reinicio, que es
+                // exactamente cómo termina un demonio de sesión.
+                if let Err(e) = cache.save() {
+                    eprintln!("could not save the attribution: {e}");
+                }
+                report_grant(options.json, &identity, &token, table);
+                if let Some(connection) = &notifier {
+                    crate::notify::grant(connection, &identity, table, &token).await;
+                }
             }
 
             Event::Error(message) => {
@@ -295,12 +337,9 @@ pub async fn run(json: bool) -> Result<()> {
         }
     }
 
-    if dirty {
-        cache.save()?;
-    }
-    if !json {
+    if !options.json && !options.daemon {
         println!(
-            "\n{} {} attributions saved to {}",
+            "\n{} {} attributions in {}",
             "✓".green(),
             cache.tokens.len(),
             crate::attrib::cache_path().display()

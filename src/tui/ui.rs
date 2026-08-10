@@ -55,9 +55,11 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
 
     // El estado del monitor importa: si no arrancó, la atribución en vivo no
     // va a ocurrir y conviene que se vea sin tener que buscarlo.
-    let status = match &app.monitor_error {
-        Some(_) => Span::styled("monitor down ", Style::new().fg(Color::Red).bold()),
-        None => Span::styled("● listening ", Style::new().fg(Color::Green)),
+    let status = match (&app.monitor_error, app.monitoring) {
+        (Some(_), _) => Span::styled("monitor down ", Style::new().fg(Color::Red).bold()),
+        (None, true) => Span::styled("● listening ", Style::new().fg(Color::Green)),
+        // Todavía no ha confirmado el bus: no se anuncia lo que no consta.
+        (None, false) => Span::styled("connecting… ", Style::new().dim()),
     };
     frame.render_widget(Paragraph::new(Line::from(status)).right_aligned(), right);
 }

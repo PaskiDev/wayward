@@ -2,8 +2,10 @@
 
 mod attrib;
 mod journal;
+mod notify;
 mod render;
 mod risk;
+mod service;
 mod store;
 mod tui;
 mod watch;
@@ -52,6 +54,19 @@ enum Command {
         /// One JSON line per event
         #[arg(long)]
         json: bool,
+        /// Quiet mode for running under systemd: log grants only, never calls
+        #[arg(long)]
+        daemon: bool,
+        /// Do not raise a desktop notification when a grant appears
+        #[arg(long)]
+        no_notify: bool,
+    },
+
+    /// Install the monitor as a systemd user service, so attribution happens
+    /// without you having to remember to watch
+    Service {
+        #[command(subcommand)]
+        action: ServiceAction,
     },
 
     /// Recover the identity of permissions granted before wayward was watching,
@@ -88,13 +103,43 @@ enum Command {
     },
 }
 
+#[derive(Subcommand)]
+enum ServiceAction {
+    /// Write the unit, enable it, and start watching
+    Install {
+        /// Enable only; start with the next graphical session instead of now
+        #[arg(long)]
+        later: bool,
+    },
+    /// Stop the service and remove the unit
+    Uninstall,
+    /// Show whether the monitor is running
+    Status,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         None | Some(Command::Tui) => tui::run().await,
         Some(Command::List { json, table }) => list(json, table).await,
-        Some(Command::Watch { json }) => watch::run(json).await,
+        Some(Command::Watch {
+            json,
+            daemon,
+            no_notify,
+        }) => {
+            watch::run(watch::Options {
+                json,
+                daemon,
+                notify: !no_notify,
+            })
+            .await
+        }
+        Some(Command::Service { action }) => match action {
+            ServiceAction::Install { later } => service::install(!later),
+            ServiceAction::Uninstall => service::uninstall(),
+            ServiceAction::Status => service::status(),
+        },
         Some(Command::Resolve {
             window,
             write,

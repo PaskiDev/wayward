@@ -44,7 +44,26 @@ $ wayward list          # what is granted, with risk and age
 $ wayward watch         # watch the bus and work out who each permission belongs to
 $ wayward resolve       # recover the identity of permissions granted before you started watching
 $ wayward revoke TOKEN  # revoke a single permission
+
+$ wayward service install    # keep watching, from every graphical session
 ```
+
+### Running it for real
+
+Live attribution only works if something is listening at the instant an
+application asks, which in practice means never. `wayward service install`
+writes a systemd user unit that starts the monitor with your graphical session
+and stops it with it — about 2 MB of memory, and no output beyond the grants it
+records.
+
+From then on every persistent grant is attributed as it happens and announced
+with a desktop notification, so you find out that something acquired permanent
+screen access at the moment it does, not three weeks later. High-risk grants
+raise a critical notification that stays on screen until dismissed.
+
+`wayward service status` shows whether it is running; `wayward service
+uninstall` removes it and keeps the attribution map. Use `--no-notify` on
+`watch` if you want the recording without the announcements.
 
 ### The terminal interface
 
@@ -146,9 +165,13 @@ resulting map is stored in `~/.local/state/wayward/attribution.json`.
 
 Worth being clear about:
 
-- **`watch` only sees what happens while it runs.** For anything granted before
-  that, use `resolve` — but its reach ends where journald's retention does, and
-  it produces ranked candidates rather than certainties.
+- **`watch` only sees what happens while it runs**, which is why
+  `service install` exists. For anything granted before that, use `resolve` —
+  but its reach ends where journald's retention does, and it produces ranked
+  candidates rather than certainties.
+- **The unit hangs off `graphical-session.target`.** Sessions that do not
+  activate it — some compositors started outside systemd — will need
+  `default.target` instead, or the service never starts.
 - **It needs monitor mode on the session bus**, which is yours, so no root is
   required. A connection in monitor mode can no longer issue calls, which is why
   wayward opens two.

@@ -52,6 +52,9 @@ pub struct App {
     pub confirm: Option<Confirm>,
     pub status: Option<String>,
     pub monitor_error: Option<String>,
+    /// Cierto solo cuando el bus ha confirmado el modo monitor. Hasta entonces
+    /// la cabecera no puede anunciar que se está vigilando.
+    pub monitoring: bool,
     /// Tokens atribuidos durante esta sesión, para resaltar el hallazgo.
     pub fresh: HashSet<String>,
     pub quit: bool,
@@ -68,6 +71,7 @@ impl App {
             confirm: None,
             status: None,
             monitor_error: None,
+            monitoring: false,
             fresh: HashSet::new(),
             quit: false,
         }
@@ -99,6 +103,11 @@ impl App {
     /// permission store, porque acaba de aparecer un permiso nuevo.
     fn on_monitor(&mut self, event: watch::Event) -> bool {
         match event {
+            watch::Event::Ready => {
+                self.monitoring = true;
+                false
+            }
+
             watch::Event::Call {
                 identity,
                 interface,
@@ -326,7 +335,21 @@ mod tests {
         let screen = render(&app);
         assert!(screen.contains("ScreenCast"), "falta la tabla:\n{screen}");
         assert!(screen.contains("unattributed"), "falta el aviso:\n{screen}");
-        assert!(screen.contains("listening"), "falta el estado del monitor");
+    }
+
+    /// La cabecera no puede decir que se está vigilando hasta que el bus lo
+    /// confirme: anunciarlo antes de tiempo es la única mentira que una
+    /// herramienta de vigilancia no se puede permitir.
+    #[test]
+    fn no_se_anuncia_la_vigilancia_antes_de_confirmarla() {
+        let mut app = App::new(vec![entry("tok")], Cache::default());
+        let antes = render(&app);
+        assert!(antes.contains("connecting"), "debería estar conectando:\n{antes}");
+        assert!(!antes.contains("listening"), "no puede afirmarlo aún:\n{antes}");
+
+        app.on_monitor(watch::Event::Ready);
+        let despues = render(&app);
+        assert!(despues.contains("listening"), "ya confirmado:\n{despues}");
     }
 
     #[test]
