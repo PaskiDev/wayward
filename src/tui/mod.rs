@@ -200,6 +200,18 @@ async fn event_loop(
     Ok(())
 }
 
+/// ¿Confirma esta tecla una revocación?
+///
+/// Se acepta la `s` de «sí» además de la `y`: la interfaz está en inglés pero
+/// quien la usa no tiene por qué, y perder una revocación por pulsar la tecla
+/// obvia en tu propio idioma es un fallo de diseño, no del usuario.
+fn confirms(key: KeyCode) -> bool {
+    matches!(
+        key,
+        KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Char('s') | KeyCode::Char('S')
+    )
+}
+
 async fn handle_key(
     app: &mut App,
     key: KeyEvent,
@@ -215,7 +227,7 @@ async fn handle_key(
     // Con el diálogo abierto solo se responde a él.
     if let Some(confirm) = &app.confirm {
         match key.code {
-            KeyCode::Char('y') | KeyCode::Char('Y') => {
+            key if confirms(key) => {
                 let (token, table) = (confirm.token.clone(), confirm.table.clone());
                 app.confirm = None;
 
@@ -245,7 +257,9 @@ async fn handle_key(
             }
             _ => {
                 app.confirm = None;
-                app.status = Some("revocation cancelled".to_string());
+                // Se recuerda la tecla buena: una cancelación por error debe
+                // enseñar cómo acertar la próxima vez.
+                app.status = Some("revocation cancelled — press y to confirm".to_string());
             }
         }
         return Ok(());
@@ -429,6 +443,23 @@ mod tests {
     /// «3 revoked» se leía como «tres revocados» cuando el 3 era la tecla. La
     /// tecla va entre corchetes y la cantidad entre paréntesis, que es lo único
     /// que hace la cabecera legible de un vistazo.
+    /// Misma razón que el test gemelo de la CLI: la traducción al inglés dejó
+    /// la `s` fuera y una revocación pulsando «s» de sí se cancelaba sin decir
+    /// nada.
+    #[test]
+    fn la_s_de_si_confirma_igual_que_la_y() {
+        for tecla in ['y', 'Y', 's', 'S'] {
+            assert!(confirms(KeyCode::Char(tecla)), "«{tecla}» debería confirmar");
+        }
+        for tecla in ['n', 'N', 'x', 'q', '\n'] {
+            assert!(!confirms(KeyCode::Char(tecla)), "«{tecla}» no debería confirmar");
+        }
+        // Enter queda fuera a propósito: es demasiado fácil de pulsar sin
+        // querer para una operación que borra sin vuelta atrás.
+        assert!(!confirms(KeyCode::Enter));
+        assert!(!confirms(KeyCode::Esc));
+    }
+
     #[test]
     fn la_cabecera_separa_la_tecla_de_la_cantidad() {
         let vacia = App::new(Vec::new(), Cache::default(), History::default());

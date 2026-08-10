@@ -424,7 +424,7 @@ fn draw_confirm(frame: &mut Frame, confirm: &Confirm) {
         Line::from("  needs it."),
         Line::from(""),
         Line::from(Span::styled(
-            "  y confirm · any other key cancels",
+            "  y or s to confirm · any other key cancels",
             Style::new().fg(Color::Yellow),
         )),
     ];

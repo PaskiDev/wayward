@@ -352,5 +352,36 @@ fn confirm() -> Result<bool> {
     std::io::stdout().flush()?;
     let mut answer = String::new();
     std::io::stdin().read_line(&mut answer)?;
-    Ok(matches!(answer.trim(), "y" | "Y" | "yes" | "Yes"))
+    Ok(is_affirmative(&answer))
+}
+
+/// «sí» cuenta igual que «yes»: la interfaz está en inglés, quien la usa no
+/// necesariamente, y una revocación perdida por eso es un fallo de diseño.
+fn is_affirmative(answer: &str) -> bool {
+    matches!(
+        answer.trim().to_lowercase().as_str(),
+        "y" | "yes" | "s" | "si" | "sí"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Al traducir la interfaz al inglés la confirmación pasó de `s` a `y`, y
+    /// pulsar «s» de sí cancelaba en silencio. Este test existe para que no
+    /// vuelva a pasar.
+    #[test]
+    fn el_si_en_castellano_confirma_igual_que_el_yes() {
+        for afirmativo in ["y", "Y", "yes", "s", "S", "si", "sí", "SÍ", " s "] {
+            assert!(is_affirmative(afirmativo), "«{afirmativo}» debería confirmar");
+        }
+    }
+
+    #[test]
+    fn lo_demas_cancela() {
+        for negativo in ["", "n", "no", "nope", "x", "yy", "quiza"] {
+            assert!(!is_affirmative(negativo), "«{negativo}» no debería confirmar");
+        }
+    }
 }
