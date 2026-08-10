@@ -9,6 +9,7 @@ mod ui;
 
 use anyhow::Result;
 use std::collections::{HashSet, VecDeque};
+use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{
     Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
@@ -22,6 +23,14 @@ use crate::watch;
 
 /// Cuántas líneas de actividad se conservan antes de tirar las viejas.
 const ACTIVITY_LIMIT: usize = 500;
+
+/// Cuánto dura un mensaje antes de devolver la barra a los atajos.
+const STATUS_TTL: Duration = Duration::from_secs(4);
+
+/// Cada cuánto se despierta el bucle para caducar mensajes. La interfaz es
+/// dirigida por eventos, así que sin este latido un mensaje seguiría en
+/// pantalla hasta que pasara cualquier otra cosa.
+const TICK: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
@@ -45,6 +54,12 @@ pub struct Confirm {
     pub table: String,
 }
 
+/// Un mensaje efímero en la barra inferior.
+pub struct Status {
+    pub text: String,
+    pub since: Instant,
+}
+
 pub struct App {
     pub entries: Vec<Entry>,
     pub cache: Cache,
@@ -54,7 +69,9 @@ pub struct App {
     pub tab: Tab,
     pub activity: VecDeque<Activity>,
     pub confirm: Option<Confirm>,
-    pub status: Option<String>,
+    /// Mensaje transitorio. Mientras está puesto tapa los atajos, así que no
+    /// puede quedarse indefinidamente.
+    pub status: Option<Status>,
     pub monitor_error: Option<String>,
     /// Cierto solo cuando el bus ha confirmado el modo monitor. Hasta entonces
     /// la cabecera no puede anunciar que se está vigilando.
@@ -84,6 +101,30 @@ impl App {
 
     pub fn current(&self) -> Option<&Entry> {
         self.entries.get(self.selected)
+    }
+
+    /// Pone un mensaje en la barra, sellado con el instante en que se emitió.
+    fn notify(&mut self, text: impl Into<String>) {
+        self.status = Some(Status {
+            text: text.into(),
+            since: Instant::now(),
+        });
+    }
+
+    /// Retira el mensaje si ya cumplió, devolviendo la barra a los atajos.
+    fn expire_status(&mut self) {
+        self.expire_status_after(STATUS_TTL);
+    }
+
+    /// Separado para poder fijarlo con tests sin depender del reloj.
+    fn expire_status_after(&mut self, ttl: Duration) {
+        if self
+            .status
+            .as_ref()
+            .is_some_and(|status| status.since.elapsed() >= ttl)
+        {
+            self.status = None;
+        }
     }
 
     fn move_by(&mut self, delta: isize) {
@@ -175,21 +216,28 @@ async fn event_loop(
     keys: &mut mpsc::Receiver<TermEvent>,
     monitor: &mut mpsc::Receiver<watch::Event>,
 ) -> Result<()> {
+    let mut ticker = tokio::time::interval(TICK);
+
     while !app.quit {
+        app.expire_status();
         terminal.draw(|frame| ui::draw(frame, app))?;
 
         tokio::select! {
+            _ = ticker.tick() => {}
             Some(event) = keys.recv() => {
                 if let TermEvent::Key(key) = event
                     && key.kind == KeyEventKind::Press
                 {
+                    // Cualquier tecla descarta el mensaje anterior; si la acción
+                    // emite uno nuevo, lo pone después.
+                    app.status = None;
                     handle_key(app, key, proxy).await?;
                 }
             }
             Some(event) = monitor.recv() => {
                 if app.on_monitor(event) {
                     if let Err(e) = app.cache.save() {
-                        app.status = Some(format!("could not save the attribution: {e}"));
+                        app.notify(format!("could not save the attribution: {e}"));
                     }
                     reload(app, proxy).await;
                 }
@@ -246,20 +294,20 @@ async fn handle_key(
                             app.history.record(revocation);
                             logged = app.history.save();
                         }
-                        app.status = Some(match logged {
+                        app.notify(match logged {
                             Ok(()) => format!("revoked {token}"),
                             Err(e) => format!("revoked {token}, but the log failed: {e}"),
                         });
                         reload(app, proxy).await;
                     }
-                    Err(e) => app.status = Some(format!("could not revoke: {e}")),
+                    Err(e) => app.notify(format!("could not revoke: {e}")),
                 }
             }
             _ => {
                 app.confirm = None;
                 // Se recuerda la tecla buena: una cancelación por error debe
                 // enseñar cómo acertar la próxima vez.
-                app.status = Some("revocation cancelled — press y to confirm".to_string());
+                app.notify("revocation cancelled — press y to confirm");
             }
         }
         return Ok(());
@@ -283,7 +331,7 @@ async fn handle_key(
         KeyCode::Char('3') => app.tab = Tab::Revocados,
         KeyCode::Char('R') => {
             reload(app, proxy).await;
-            app.status = Some("list reloaded".to_string());
+            app.notify("list reloaded");
         }
         KeyCode::Char('r') => {
             if let Some(entry) = app.current() {
@@ -304,7 +352,7 @@ async fn reload(app: &mut App, proxy: &PermissionStoreProxy<'_>) {
             app.entries = entries;
             app.selected = app.selected.min(app.entries.len().saturating_sub(1));
         }
-        Err(e) => app.status = Some(format!("could not re-read the store: {e}")),
+        Err(e) => app.notify(format!("could not re-read the store: {e}")),
     }
 }
 
@@ -443,6 +491,40 @@ mod tests {
     /// «3 revoked» se leía como «tres revocados» cuando el 3 era la tecla. La
     /// tecla va entre corchetes y la cantidad entre paréntesis, que es lo único
     /// que hace la cabecera legible de un vistazo.
+    /// El mensaje ocupa el sitio de los atajos, así que quedarse era dejar la
+    /// interfaz sin su única ayuda visible.
+    #[test]
+    fn el_mensaje_no_se_queda_tapando_los_atajos() {
+        let mut app = App::new(vec![entry("tok")], Cache::default(), History::default());
+
+        app.notify("revoked something");
+        let con_mensaje = render(&app);
+        assert!(con_mensaje.contains("revoked something"), "falta el mensaje");
+        assert!(
+            !con_mensaje.contains("j/k move"),
+            "mientras dura, el mensaje ocupa la barra"
+        );
+
+        app.expire_status_after(Duration::ZERO);
+        let sin_mensaje = render(&app);
+        assert!(
+            !sin_mensaje.contains("revoked something"),
+            "el mensaje debería haber caducado:\n{sin_mensaje}"
+        );
+        assert!(
+            sin_mensaje.contains("j/k move"),
+            "los atajos tienen que volver:\n{sin_mensaje}"
+        );
+    }
+
+    #[test]
+    fn un_mensaje_reciente_no_caduca_todavia() {
+        let mut app = App::new(Vec::new(), Cache::default(), History::default());
+        app.notify("list reloaded");
+        app.expire_status();
+        assert!(app.status.is_some(), "cuatro segundos no han pasado aún");
+    }
+
     /// Misma razón que el test gemelo de la CLI: la traducción al inglés dejó
     /// la `s` fuera y una revocación pulsando «s» de sí se cancelaba sin decir
     /// nada.

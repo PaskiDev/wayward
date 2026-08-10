@@ -394,7 +394,7 @@ fn short_stamp(ts: i64) -> String {
 fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
     let line = match &app.status {
         Some(status) => Line::from(Span::styled(
-            format!(" {status}"),
+            format!(" {}", status.text),
             Style::new().fg(Color::Cyan),
         )),
         None => Line::from(Span::styled(
