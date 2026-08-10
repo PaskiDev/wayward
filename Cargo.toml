@@ -1,6 +1,6 @@
 [package]
 name = "wayward"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 # Piso por las let-chains, estables en la edición 2024 desde 1.88. No está
 # comprobado contra un compilador viejo: aquí solo hay un 1.97.
